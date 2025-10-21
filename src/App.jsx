@@ -231,8 +231,10 @@ export default function App() {
 
     // --- UI RENDERING ---
     return (
-        <div className="min-h-screen bg-gray-50 font-sans antialiased">
-            
+      <div className="min-h-screen bg-gray-50 font-sans antialiased">
+        {/* TEMP: Tailwind test box (remove after verifying) */}
+        <div className="p-4 bg-green-200 text-black mb-4">tailwind test box</div>
+        
             {/* Header */}
             <header className="bg-white shadow-lg sticky top-0 z-20 border-b border-violet-100">
                 <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
