@@ -341,6 +341,7 @@ export default function App() {
                         )}
                     </div>
                 )}
+                </div>
              </main>
  
              {/* Footer */}
@@ -350,3 +351,4 @@ export default function App() {
          </div>
      );
  }
+
