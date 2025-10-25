@@ -61,7 +61,7 @@ export default function App() {
     const [selectedTopic, setSelectedTopic] = useState('All');
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [algoliaIndex, setAlgoliaIndex] = useState(null);
+    const [algoliaClient, setAlgoliaClient] = useState(null);
 
     useEffect(() => {
         const runtimeFirebaseConfig = {
@@ -72,10 +72,12 @@ export default function App() {
             messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? "",
             appId: import.meta.env.VITE_FIREBASE_APP_ID ?? ""
         };
+        
         console.log('Firebase runtime config (masked):', {
           ...runtimeFirebaseConfig,
           apiKey: runtimeFirebaseConfig.apiKey ? runtimeFirebaseConfig.apiKey.slice(0,6) + '…' : runtimeFirebaseConfig.apiKey
         });
+        
         if (!runtimeFirebaseConfig.apiKey) {
             setError("Missing Firebase API key. Add VITE_FIREBASE_API_KEY to .env and restart Vite.");
             setIsLoading(false);
@@ -90,14 +92,13 @@ export default function App() {
             setDb(firestore);
             setAuth(authService);
 
-            // Initialize Algolia
+            // Initialize Algolia (v5 API)
             const algoliaAppId = import.meta.env.VITE_ALGOLIA_APP_ID ?? "";
             const algoliaSearchKey = import.meta.env.VITE_ALGOLIA_SEARCH_API_KEY ?? "";
             
             if (algoliaAppId && algoliaSearchKey) {
-                const algoliaClient = algoliasearch(algoliaAppId, algoliaSearchKey);
-                const index = algoliaClient.initIndex('whitepapers');
-                setAlgoliaIndex(index);
+                const client = algoliasearch(algoliaAppId, algoliaSearchKey);
+                setAlgoliaClient(client);
             } else {
                 console.warn('Algolia credentials not found. Search functionality will be limited.');
             }
@@ -122,7 +123,12 @@ export default function App() {
 
         } catch (initError) {
             console.error("Firebase Initialization Failed:", initError);
-            setError("Firebase failed to initialize. Check your configuration.");
+            console.error("Firebase Initialization Error Details:", {
+                message: initError.message,
+                code: initError.code,
+                stack: initError.stack
+            });
+            setError(`Firebase failed to initialize: ${initError.message || 'Check your configuration.'}`);
             setIsLoading(false);
         }
     }, []);
@@ -161,13 +167,17 @@ export default function App() {
         return whitepapers;
     }, [searchTerm, selectedTopic, whitepapers]);
 
-    // Algolia search effect
+    // Algolia search effect (v5 API)
     useEffect(() => {
-        if (searchTerm.length > 2 && algoliaIndex) {
+        if (searchTerm.length > 2 && algoliaClient) {
             setIsLoading(true);
             
-            algoliaIndex.search(searchTerm, {
-                filters: selectedTopic === 'All' ? '' : `topic:"${selectedTopic}"`
+            algoliaClient.searchSingleIndex({
+                indexName: 'whitepapers',
+                searchParams: {
+                    query: searchTerm,
+                    filters: selectedTopic === 'All' ? '' : `topic:"${selectedTopic}"`
+                }
             }).then(({ hits }) => {
                 const results = hits.map(hit => ({
                     id: hit.objectID,
@@ -185,7 +195,7 @@ export default function App() {
                 setIsLoading(false);
             });
         }
-    }, [searchTerm, selectedTopic, algoliaIndex]);
+    }, [searchTerm, selectedTopic, algoliaClient]);
 
     const clearList = () => {
       setSearchTerm('');
