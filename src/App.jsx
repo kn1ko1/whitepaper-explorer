@@ -72,12 +72,10 @@ export default function App() {
             messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID ?? "",
             appId: import.meta.env.VITE_FIREBASE_APP_ID ?? ""
         };
-        
         console.log('Firebase runtime config (masked):', {
           ...runtimeFirebaseConfig,
           apiKey: runtimeFirebaseConfig.apiKey ? runtimeFirebaseConfig.apiKey.slice(0,6) + '…' : runtimeFirebaseConfig.apiKey
         });
-        
         if (!runtimeFirebaseConfig.apiKey) {
             setError("Missing Firebase API key. Add VITE_FIREBASE_API_KEY to .env and restart Vite.");
             setIsLoading(false);
@@ -92,7 +90,7 @@ export default function App() {
             setDb(firestore);
             setAuth(authService);
 
-            // Initialize Algolia (v5 API)
+            // Initialize Algolia with v5 API
             const algoliaAppId = import.meta.env.VITE_ALGOLIA_APP_ID ?? "";
             const algoliaSearchKey = import.meta.env.VITE_ALGOLIA_SEARCH_API_KEY ?? "";
             
@@ -123,12 +121,7 @@ export default function App() {
 
         } catch (initError) {
             console.error("Firebase Initialization Failed:", initError);
-            console.error("Firebase Initialization Error Details:", {
-                message: initError.message,
-                code: initError.code,
-                stack: initError.stack
-            });
-            setError(`Firebase failed to initialize: ${initError.message || 'Check your configuration.'}`);
+            setError("Firebase failed to initialize. Check your configuration.");
             setIsLoading(false);
         }
     }, []);
@@ -161,10 +154,23 @@ export default function App() {
     }, [db, userId]);
 
     const filteredPapers = useMemo(() => {
+        let papersToFilter = whitepapers;
+
+        // Local filtering for topic when no search term
         if (selectedTopic !== 'All' && searchTerm.length === 0) {
-            return whitepapers.filter(paper => paper.topic === selectedTopic);
+            papersToFilter = papersToFilter.filter(paper => paper.topic === selectedTopic);
         }
-        return whitepapers;
+
+        // Local search filtering when Algolia is not available or search term is short
+        if (searchTerm.length > 0 && searchTerm.length <= 2) {
+            const lowerSearch = searchTerm.toLowerCase();
+            papersToFilter = papersToFilter.filter(p => 
+                p.title.toLowerCase().includes(lowerSearch) || 
+                p.summary.toLowerCase().includes(lowerSearch)
+            );
+        }
+
+        return papersToFilter;
     }, [searchTerm, selectedTopic, whitepapers]);
 
     // Algolia search effect (v5 API)
@@ -191,7 +197,6 @@ export default function App() {
                 setIsLoading(false);
             }).catch(algoliaError => {
                 console.error("Algolia search failed:", algoliaError);
-                setError("Algolia search failed. Check your API key and index configuration.");
                 setIsLoading(false);
             });
         }

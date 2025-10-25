@@ -1,0 +1,15 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Public Whitepapers - Anyone can read, only authenticated users can write (simplified for testing)
+    match /artifacts/{appId}/public/data/whitepapers/{docId} {
+      allow read: if true;
+      allow write: if request.auth.uid != null; 
+    }
+    
+    // Private Bookmarks - Only owner can read/write their own data
+    match /artifacts/{appId}/users/{userId}/bookmarks/{docId} {
+      allow read, write: if request.auth.uid == userId;
+    }
+  }
+}
