@@ -6,6 +6,9 @@ import { liteClient as algoliasearch } from 'algoliasearch/lite';
 import { Search, Loader, List, Filter, Bookmark, BookOpen, Clock, User, LogOut, Code } from "lucide-react";
 import { styles } from "./features/styling/inline/inlineStyles";
 
+// Number of items per page for pagination / Algolia queries
+const PAPERS_PER_PAGE = 20;
+
 const ALL_TOPICS = ['All', 'AI & Machine Learning', 'Decentralized Finance', 'Quantum Computing', 'Biotechnology', 'Renewable Energy'];
 
 const LoadingIndicator = () => (
@@ -16,7 +19,7 @@ const LoadingIndicator = () => (
 );
 
 const WhitepaperCard = ({ paper }) => (
-    <div style={styles.card}>
+    <div data-paper-id={paper.id} style={styles.card}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '1rem' }}>
             <h3 style={styles.cardTitle}>{paper.title}</h3>
             <button
@@ -37,7 +40,11 @@ const WhitepaperCard = ({ paper }) => (
         <div style={styles.cardFooter}>
             <span style={{ display: 'flex', alignItems: 'center' }}>
                 <Clock style={{ width: '1rem', height: '1rem', marginRight: '0.25rem' }} />
-                Published: {paper.publicationDate ? new Date(paper.publicationDate.toDate()).toLocaleDateString() : 'N/A'}
+                Published: {paper.publicationDate
+                    ? (typeof paper.publicationDate.toDate === 'function'
+                        ? new Date(paper.publicationDate.toDate()).toLocaleDateString()
+                        : new Date(paper.publicationDate).toLocaleDateString())
+                    : 'N/A'}
             </span>
             <a
                 href={paper.link || '#'}
@@ -51,6 +58,46 @@ const WhitepaperCard = ({ paper }) => (
         </div>
     </div>
 );
+
+async function performAlgoliaSearch(client, indexName, { query = '', hitsPerPage = PAPERS_PER_PAGE, page = 0, filters = '' } = {}) {
+    if (!client) return [];
+    // v5 single-index helper
+    if (typeof client.searchSingleIndex === 'function') {
+        const res = await client.searchSingleIndex({
+            indexName,
+            searchParams: { query, hitsPerPage, page, filters }
+        });
+        return res.hits ?? [];
+    }
+    // client.search (multi-index) -> results[0].hits
+    if (typeof client.search === 'function') {
+        const params = new URLSearchParams();
+        params.set('hitsPerPage', String(hitsPerPage));
+        params.set('page', String(page));
+        if (filters) params.set('filters', filters);
+        // legacy/multi-search expects { indexName, params } (no separate `query` field)
+        const res = await client.search([{ indexName, params: params.toString() }]);
+        return res?.results?.[0]?.hits ?? [];
+    }
+    // initIndex().search (v4 and older patterns)
+    if (typeof client.initIndex === 'function') {
+        const idx = client.initIndex(indexName);
+        if (typeof idx.search === 'function') {
+            const res = await idx.search(query || '', { hitsPerPage, page, filters });
+            return res.hits ?? [];
+        }
+    }
+    // legacy getIndex
+    if (typeof client.getIndex === 'function') {
+        const idx = client.getIndex(indexName);
+        if (typeof idx.search === 'function') {
+            const res = await idx.search(query || '', { hitsPerPage, page, filters });
+            return res.hits ?? [];
+        }
+    }
+    // Unknown client shape
+    throw new Error('Unsupported Algolia client shape');
+}
 
 export default function App() {
     const [db, setDb] = useState(null);
@@ -146,12 +193,21 @@ export default function App() {
         const papersRef = collection(db, papersCollectionPath);
         
         const unsubscribeSnapshot = onSnapshot(papersRef, (snapshot) => {
-            const papersList = snapshot.docs.map(doc => ({
-                id: doc.id,
-                ...doc.data()
-            }));
-            setWhitepapers(papersList);
-            console.log("Firestore papers loaded:", papersList.length);
+            // Build a list of unique papers keyed by normalized title while preserving order,
+            // stop when we reach the desired unique count (25).
+            const seen = new Set();
+            const unique = [];
+            for (const doc of snapshot.docs) {
+                const data = { id: doc.id, ...doc.data() };
+                const titleKey = (data.title || '').trim().toLowerCase();
+                if (!titleKey) continue;
+                if (seen.has(titleKey)) continue;
+                seen.add(titleKey);
+                unique.push(data);
+                if (unique.length >= 25) break;
+            }
+            setWhitepapers(unique);
+            console.log(`Firestore papers loaded: ${snapshot.docs.length} total, using ${unique.length} unique by title`);
         }, (dbError) => {
             console.error("Error fetching real-time whitepapers:", dbError);
             setError("Error fetching data. Check Firestore path and security rules.");
@@ -167,34 +223,58 @@ export default function App() {
         return whitepapers;
     }, [searchTerm, selectedTopic, whitepapers]);
 
-    // Algolia search effect (v5 API)
+    // Pagination (20 items per page)
+    const [currentPage, setCurrentPage] = useState(0);
     useEffect(() => {
+        // reset to first page whenever filter/search/source changes
+        setCurrentPage(0);
+    }, [searchTerm, selectedTopic, whitepapers]);
+    
+    const totalPages = Math.max(1, Math.ceil(filteredPapers.length / PAPERS_PER_PAGE));
+    const paginatedPapers = filteredPapers.slice(
+        currentPage * PAPERS_PER_PAGE,
+        (currentPage + 1) * PAPERS_PER_PAGE
+    );
+    
+    const goPrev = () => setCurrentPage(p => Math.max(0, p - 1));
+    const goNext = () => setCurrentPage(p => Math.min(totalPages - 1, p + 1));
+    const goToPage = (n) => setCurrentPage(() => Math.min(Math.max(0, n), totalPages - 1));
+
+    // Algolia search effect (compatibly use performAlgoliaSearch)
+    useEffect(() => {
+        let mounted = true;
         if (searchTerm.length > 2 && algoliaClient) {
             setIsLoading(true);
-            
-            algoliaClient.searchSingleIndex({
-                indexName: 'whitepapers',
-                searchParams: {
-                    query: searchTerm,
-                    filters: selectedTopic === 'All' ? '' : `topic:"${selectedTopic}"`
+            (async () => {
+                try {
+                    const hits = await performAlgoliaSearch(
+                        algoliaClient,
+                        'whitepapers',
+                        {
+                            query: searchTerm,
+                            filters: selectedTopic === 'All' ? '' : `topic:"${selectedTopic}"`
+                        }
+                    );
+                    if (!mounted) return;
+                    const results = hits.map(hit => ({
+                        id: hit.objectID ?? hit.id,
+                        title: hit.title,
+                        summary: hit.summary,
+                        topic: hit.topic,
+                        link: hit.link,
+                        publicationDate: hit.publicationDate ? { toDate: () => new Date(hit.publicationDate) } : null
+                    }));
+                    setWhitepapers(results);
+                } catch (algoliaError) {
+                    console.error("Algolia search failed:", algoliaError);
+                    setError("Algolia search failed. Falling back to Firestore results.");
+                    // keep existing whitepapers (firestore) as fallback
+                } finally {
+                    if (mounted) setIsLoading(false);
                 }
-            }).then(({ hits }) => {
-                const results = hits.map(hit => ({
-                    id: hit.objectID,
-                    title: hit.title,
-                    summary: hit.summary,
-                    topic: hit.topic,
-                    link: hit.link,
-                    publicationDate: { toDate: () => new Date(hit.publicationDate) }
-                }));
-                setWhitepapers(results);
-                setIsLoading(false);
-            }).catch(algoliaError => {
-                console.error("Algolia search failed:", algoliaError);
-                setError("Algolia search failed. Check your API key and index configuration.");
-                setIsLoading(false);
-            });
+            })();
         }
+        return () => { mounted = false; };
     }, [searchTerm, selectedTopic, algoliaClient]);
 
     const clearList = () => {
@@ -287,9 +367,10 @@ export default function App() {
                  {isLoading && (searchTerm.length === 0 && whitepapers.length === 0) ? (
                     <LoadingIndicator />
                 ) : (
+                    <>
                     <div style={styles.gridContainer}>
                         {filteredPapers.length > 0 ? (
-                            filteredPapers.map(paper => (
+                            paginatedPapers.map(paper => (
                                 <WhitepaperCard key={paper.id} paper={paper} />
                             ))
                         ) : (
@@ -300,7 +381,30 @@ export default function App() {
                             </div>
                         )}
                     </div>
-                )}
+
+                    {/* Pagination controls */}
+                    {filteredPapers.length > 0 && (
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '1.25rem', gridColumn: '1/-1' }}>
+                            <div style={{ color: '#374151' }}>
+                                Showing {(currentPage * PAPERS_PER_PAGE) + 1} - {Math.min((currentPage + 1) * PAPERS_PER_PAGE, filteredPapers.length)} of {filteredPapers.length}
+                            </div>
+                            <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                                <button onClick={goPrev} disabled={currentPage === 0} style={{ padding: '0.5rem 0.75rem', borderRadius: '0.5rem', border: '1px solid #e5e7eb', background: currentPage === 0 ? '#f3f4f6' : '#fff', cursor: currentPage === 0 ? 'not-allowed' : 'pointer' }}>Prev</button>
+                                <div style={{ display: 'flex', gap: '0.25rem', alignItems: 'center' }}>
+                                    <span style={{ color: '#6b7280' }}>Page</span>
+                                    <select value={currentPage} onChange={(e) => goToPage(Number(e.target.value))} style={{ padding: '0.5rem', borderRadius: '0.5rem', border: '1px solid #e5e7eb', background: '#fff' }}>
+                                        {Array.from({ length: totalPages }).map((_, i) => (
+                                            <option key={i} value={i}>{i + 1}</option>
+                                        ))}
+                                    </select>
+                                    <span style={{ color: '#6b7280' }}>of {totalPages}</span>
+                                </div>
+                                <button onClick={goNext} disabled={currentPage >= totalPages - 1} style={{ padding: '0.5rem 0.75rem', borderRadius: '0.5rem', border: '1px solid #e5e7eb', background: currentPage >= totalPages - 1 ? '#f3f4f6' : '#fff', cursor: currentPage >= totalPages - 1 ? 'not-allowed' : 'pointer' }}>Next</button>
+                            </div>
+                        </div>
+                    )}
+                    </>
+                 )}
              </main>
  
              <footer style={styles.footer}>

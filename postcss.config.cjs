@@ -3,4 +3,6 @@ module.exports = {
     // project does not use Tailwind; keep PostCSS basics
     require('autoprefixer')
   ]
-};
+};npm
+ls
+algoliasearch
